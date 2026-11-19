@@ -1,0 +1,24 @@
+<resources>
+    <string name="app_name">Harmoni EQ</string>
+    <string name="eq_subtitle">Pro Studio Audio DSP</string>
+    <string name="power_on">Aktif</string>
+    <string name="power_bypass">Bypass</string>
+    <string name="tab_equalizer">Equalizer</string>
+    <string name="tab_effects">Efek Pro</string>
+    <string name="tab_presets">Preset</string>
+    <string name="mode_studio_audio">Audio Uji Studio</string>
+    <string name="mode_global_mix">Audio Sistem Global</string>
+    <string name="play_test_audio">Putar Uji Suara</string>
+    <string name="pause_test_audio">Jeda Uji Suara</string>
+    <string name="reset_flat">Reset Flat</string>
+    <string name="save_preset">Simpan Preset</string>
+    <string name="bass_boost_label">Bass Boost</string>
+    <string name="virtualizer_label">3D Surround</string>
+    <string name="loudness_label">Preamp Gain</string>
+    <string name="stereo_balance_label">Keseimbangan Stereo</string>
+    <string name="custom_preset_dialog_title">Simpan Preset Kustom</string>
+    <string name="custom_preset_name_hint">Contoh: Late Night Bass</string>
+    <string name="cancel">Batal</string>
+    <string name="save">Simpan</string>
+    <string name="delete">Hapus</string>
+</resources>

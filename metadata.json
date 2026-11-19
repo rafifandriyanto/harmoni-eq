@@ -1,0 +1,6 @@
+{
+  "name": "Harmoni EQ",
+  "description": "Aplikasi equalizer audio pro-studio dengan kurva respons frekuensi interaktif, fader multi-band, efek bass boost & virtualizer, serta preset kustom.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
