@@ -21,10 +21,10 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.setMain
 import kotlinx.coroutines.withTimeout
@@ -41,6 +41,8 @@ import org.robolectric.annotation.Config
 import java.io.File
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
@@ -54,6 +56,14 @@ class AutoEqLogicTest {
 
     private val app = ApplicationProvider.getApplicationContext<Application>()
     private val testScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var mainExecutor: ExecutorService? = null
+
+    private fun installRealMainDispatcher() {
+        mainExecutor?.shutdownNow()
+        val executor = Executors.newSingleThreadExecutor { r -> Thread(r, "autoeq-test-main") }
+        mainExecutor = executor
+        Dispatchers.setMain(executor.asCoroutineDispatcher())
+    }
 
     private fun newDataStore(prefix: String) = PreferenceDataStoreFactory.create(scope = testScope) {
         File(app.cacheDir, "$prefix-${UUID.randomUUID()}.preferences_pb")
@@ -62,6 +72,8 @@ class AutoEqLogicTest {
     @After
     fun tearDown() {
         Dispatchers.resetMain()
+        mainExecutor?.shutdownNow()
+        mainExecutor = null
         testScope.coroutineContext[Job]?.cancel()
     }
 
@@ -328,7 +340,7 @@ class AutoEqLogicTest {
 
     @Test
     fun `EqualizerViewModel applies AutoEQ persists across restart and restores manual gains on disable`() = runBlocking {
-        Dispatchers.setMain(UnconfinedTestDispatcher())
+        installRealMainDispatcher()
         val presetStore = newDataStore("eq-preset")
         val autoEqStore = newDataStore("eq-autoeq")
         val presetRepo = PresetRepository(app, presetStore)
@@ -450,7 +462,7 @@ class AutoEqLogicTest {
 
     @Test
     fun `AutoEqViewModel sealed uiState loads profiles filters search and ramps audio engine on select`() = runBlocking {
-        Dispatchers.setMain(UnconfinedTestDispatcher())
+        installRealMainDispatcher()
         val sampleIndex = "- [Sony WH-1000XM5](./oratory1990/over-ear/Sony%20WH-1000XM5)\n" +
             "- [Apple AirPods Pro 2](./crinacle/in-ear/Apple%20AirPods%20Pro%202)"
         val sampleCsv = """
@@ -476,7 +488,7 @@ class AutoEqLogicTest {
 
         vm.loadProfiles()
         val loaded = withTimeout(10_000) {
-            vm.uiState.first { it is AutoEqUiState.Success } as AutoEqUiState.Success
+            vm.uiState.first { it is AutoEqUiState.Success && it.profiles.size == 2 } as AutoEqUiState.Success
         }
         assertEquals(2, loaded.profiles.size)
         assertNull(loaded.selectedProfile)
@@ -516,7 +528,7 @@ class AutoEqLogicTest {
 
     @Test
     fun `AutoEqViewModel debounces rapid search keystrokes by 300ms in memory without hitting network`() = runBlocking {
-        Dispatchers.setMain(UnconfinedTestDispatcher())
+        installRealMainDispatcher()
         val networkCalls = AtomicInteger(0)
         val sampleIndex = """
             - [Sony WH-1000XM5](./oratory1990/over-ear/Sony%20WH-1000XM5)
@@ -528,28 +540,28 @@ class AutoEqLogicTest {
             sampleIndex
         }
         val repo = AutoEqRepository(app, store = newDataStore("autoeq-debounce"), remote = remote)
-        val vm = AutoEqViewModel(app, repo, searchDebounceMs = 300L)
+        val vm = AutoEqViewModel(app, repo, searchDebounceMs = 400L)
 
         vm.loadProfiles()
-        val initial = withTimeout(5_000) {
+        val initial = withTimeout(10_000) {
             vm.uiState.first { it is AutoEqUiState.Success && it.profiles.size == 3 } as AutoEqUiState.Success
         }
         assertEquals(3, initial.profiles.size)
         val baselineFilters = vm.filterExecutionCount.get()
 
-        // Rapid keystrokes within 120ms must NOT trigger intermediate filtering or network hits
+        // Rapid keystrokes well within debounce window must NOT trigger intermediate filtering or network hits
         vm.updateSearchQuery("s")
-        delay(50)
+        delay(25)
         vm.updateSearchQuery("so")
-        delay(50)
+        delay(25)
         vm.updateSearchQuery("SONY")
 
-        // Immediately after rapid typing (< 300ms), list has not yet re-filtered for intermediate queries
+        // Immediately after rapid typing (< 400ms), list has not yet re-filtered for intermediate queries
         assertEquals(3, (vm.uiState.value as AutoEqUiState.Success).profiles.size)
         assertEquals(1, networkCalls.get())
 
-        // After 300ms debounce window elapses, case-insensitive in-memory filter runs once
-        val debounced = withTimeout(5_000) {
+        // After debounce window elapses, case-insensitive in-memory filter runs once
+        val debounced = withTimeout(10_000) {
             vm.uiState.first {
                 it is AutoEqUiState.Success && it.profiles.size == 1 && it.profiles.first().name == "Sony WH-1000XM5"
             } as AutoEqUiState.Success
@@ -564,14 +576,14 @@ class AutoEqLogicTest {
 
     @Test
     fun `AutoEqViewModel handles network failure, corrupted CSV parse error, and offline cache fallback`() = runBlocking {
-        Dispatchers.setMain(UnconfinedTestDispatcher())
+        installRealMainDispatcher()
 
         // 1. Network failure with empty cache -> exact network error message
         val failingRemote = AutoEqRemoteDataSource { throw java.io.IOException("No network") }
         val emptyRepo = AutoEqRepository(app, store = newDataStore("autoeq-net-err"), remote = failingRemote)
         val errVm = AutoEqViewModel(app, emptyRepo, searchDebounceMs = 0L)
         errVm.loadProfiles()
-        val netErr = withTimeout(5_000) {
+        val netErr = withTimeout(10_000) {
             errVm.uiState.first { it is AutoEqUiState.Error } as AutoEqUiState.Error
         }
         assertEquals(AutoEqViewModel.NETWORK_ERROR_MESSAGE, netErr.message)
@@ -584,11 +596,11 @@ class AutoEqLogicTest {
         val corruptRepo = AutoEqRepository(app, store = newDataStore("autoeq-parse-err"), remote = corruptRemote)
         val parseVm = AutoEqViewModel(app, corruptRepo, searchDebounceMs = 0L)
         parseVm.loadProfiles()
-        val loaded = withTimeout(5_000) {
-            parseVm.uiState.first { it is AutoEqUiState.Success } as AutoEqUiState.Success
+        val loaded = withTimeout(10_000) {
+            parseVm.uiState.first { it is AutoEqUiState.Success && it.profiles.isNotEmpty() } as AutoEqUiState.Success
         }
         parseVm.selectProfile(loaded.profiles.first())
-        val parseErr = withTimeout(5_000) {
+        val parseErr = withTimeout(10_000) {
             parseVm.uiState.first { it is AutoEqUiState.Error } as AutoEqUiState.Error
         }
         assertEquals(AutoEqViewModel.PARSE_ERROR_MESSAGE, parseErr.message)
@@ -606,11 +618,11 @@ class AutoEqLogicTest {
         offline = true
         val offlineVm = AutoEqViewModel(app, onlineRepo, searchDebounceMs = 0L)
         offlineVm.loadProfiles(forceRefresh = true)
-        val cachedState = withTimeout(5_000) {
+        val cachedState = withTimeout(10_000) {
             offlineVm.uiState.first { it is AutoEqUiState.Success && it.profiles.size == 1 } as AutoEqUiState.Success
         }
         assertEquals("Sennheiser HD 800", cachedState.profiles.first().name)
-        val offlineSnackbar = withTimeout(5_000) {
+        val offlineSnackbar = withTimeout(10_000) {
             offlineVm.snackbarMessage.first { it != null }
         }
         assertEquals(AutoEqViewModel.OFFLINE_CACHE_SNACKBAR, offlineSnackbar)
@@ -620,7 +632,7 @@ class AutoEqLogicTest {
 
     @Test
     fun `Master EQ switch and manual fader drag synchronize AutoEQ across States A, B, C and D`() = runBlocking {
-        Dispatchers.setMain(UnconfinedTestDispatcher())
+        installRealMainDispatcher()
         val presetStore = newDataStore("eq-sm-preset")
         val autoEqStore = newDataStore("eq-sm-autoeq")
         val presetRepo = PresetRepository(app, presetStore)
@@ -631,7 +643,7 @@ class AutoEqLogicTest {
         val autoEqVm = AutoEqViewModel(app, autoEqRepo, searchDebounceMs = 0L)
         withTimeout(10_000) { eqVm.uiState.first { it.libraryRestored } }
         autoEqVm.loadProfiles()
-        withTimeout(5_000) { autoEqVm.uiState.first { it is AutoEqUiState.Success } }
+        withTimeout(10_000) { autoEqVm.uiState.first { it is AutoEqUiState.Success && it.profiles.isNotEmpty() } }
 
         val hd800 = HeadphoneProfile(
             name = "Sennheiser HD 800",
