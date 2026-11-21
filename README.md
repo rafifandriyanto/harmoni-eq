@@ -76,7 +76,7 @@ Berikut ringkasan seluruh perbaikan dan fitur baru yang telah ditambahkan:
 
 ## Build & Tes Lokal
 
-Prasyarat: JDK 17+, Android SDK (`compileSdk 36`), `keytool` di PATH.
+Prasyarat: JDK 21+ (dibutuhkan Robolectric untuk Android SDK 36), Android SDK (`compileSdk 36`), `keytool` di PATH.
 
 1. Pulihkan (atau buat) keystore debug standar (`debug.keystore` di-ignore git):
 
