@@ -1,6 +1,7 @@
 package com.example.ui
 
 import android.app.Application
+import androidx.compose.runtime.Stable
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.audio.EqualizerService
@@ -16,6 +17,7 @@ import kotlinx.coroutines.launch
 import java.util.UUID
 import kotlin.math.round
 
+@Stable
 class EqualizerViewModel(
     application: Application,
     private val repository: PresetRepository
@@ -43,6 +45,7 @@ class EqualizerViewModel(
     private val histories = mapOf("A" to History(), "B" to History())
     private val slots = mutableMapOf<String, Entry>()
     private var gestureStart: Entry? = null
+    private var audioSyncJob: Job? = null
     private val history get() = histories.getValue(_uiState.value.activeAbSlot)
     private fun entry() = Entry(_uiState.value.soundSnapshot(), _uiState.value.activePresetId)
 
@@ -134,13 +137,25 @@ class EqualizerViewModel(
         val before = entry()
         _uiState.update(transform)
         if (gestureStart == null) push(before, entry())
-        refreshDerived(); syncAudioEngine(); schedulePersist()
+        refreshDerived()
+        // Selama gesture, sinkronisasi audio di-throttle ke thread latar agar
+        // panggilan binder AudioEffect tidak memblokir main thread per event drag.
+        if (gestureStart != null) scheduleAudioSync() else syncAudioEngine()
+        schedulePersist()
+    }
+    private fun scheduleAudioSync() {
+        if (audioSyncJob?.isActive == true) return
+        audioSyncJob = viewModelScope.launch(kotlinx.coroutines.Dispatchers.Default) {
+            delay(32)
+            syncAudioEngine()
+        }
     }
     fun beginGesture() { if (gestureStart == null) gestureStart = entry() }
     fun endGesture() {
         gestureStart?.let { push(it, entry()) }
         gestureStart = null
-        refreshDerived(); schedulePersist()
+        audioSyncJob?.cancel()
+        refreshDerived(); syncAudioEngine(); schedulePersist()
     }
     fun undo() {
         endGesture()
@@ -244,6 +259,7 @@ class EqualizerViewModel(
         updateLibrary()
     }
     fun toggleFavorite(id: String) {
+        userInteracted = true
         _uiState.update { it.copy(favoriteIds = if (id in it.favoriteIds) it.favoriteIds - id else it.favoriteIds + id) }
         schedulePersist(true)
     }

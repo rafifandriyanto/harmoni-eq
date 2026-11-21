@@ -4,9 +4,14 @@ Konsol equalizer Android 20 band stereo (kanan/kiri terpisah) dengan preset snap
 
 > **Disclosure — vibe coding:** aplikasi ini dibangun lewat *vibe coding*: pemilik proyek mengarahkan desain, palet, dan keputusan produk lewat percakapan, lalu AI agent (Qoder) menulis kode, tes, dan verifikasi di bawah arahan tersebut. Bukan kode tulis-tangan murni, dan bukan juga output AI yang diterima buta: setiap perubahan lewat tes unit/Robolectric (49 tes), lint, render UI yang diperiksa visual, dan satu putaran review kode independen yang temuannya ditutup atau ditolak dengan bukti. Riwayat keputusan ada di dokumen PRD terpisah (tidak ikut repo ini).
 
+## Unduh APK (Siap Pakai)
+
+Pengguna dapat langsung mengunduh file APK terbaru melalui halaman GitHub Releases tanpa perlu clone atau build secara manual:
+- [Unduh Harmoni EQ APK Terbaru](https://github.com/rafifandriyanto/harmoni-eq/releases/latest)
+
 ## Screenshot
 
-Render Compose NATIVE (Robolectric, bukan emulator) dari kode repo ini, palet "warm hardware" v2:
+Render Compose NATIVE (Robolectric, bukan emulator) dari kode repo ini dengan UI Restrained Glass baru (Dark & Light support, custom accent):
 
 | Equalizer (Advanced) | Simple | Efek |
 | --- | --- | --- |
@@ -18,6 +23,8 @@ Render Compose NATIVE (Robolectric, bukan emulator) dari kode repo ini, palet "w
 
 ## Fitur
 
+- **UI Restrained Glass Modern:** UI chrome translucent dengan `RenderEffect` blur (API 31+), fallback translucent halus (API < 31), tema Dark & Light adaptif, kustomisasi warna aksen (Amber, Sage, custom hex), serta toggle **Reduce Transparency** & **Reduce Motion** (tersimpan di DataStore `harmoni_theme_prefs_v1`). Dokumentasi token desain lengkap ada di [README-DESIGN-SYSTEM.md](README-DESIGN-SYSTEM.md).
+- **Optimasi Performa 60fps:** Selama drag fader atau scroll daftar, efek blur dimatikan sementara (`LocalGlassBlurSuppressed`) dan backdrop spot di-pre-render statis (`StaticRadialBackdrop.kt`) untuk menjaga framerate 60fps stabil.
 - EQ 20 band stereo: mode Simple (Bass/Mid/Treble) dan Advanced (fader per band, fokus kanal L/R/linked, kurva EQ yang bisa diseret).
 - Preset `SoundSnapshot` v2 lossless (EQ + efek + headroom), impor/ekspor JSON lewat SAF, batas 200 preset kustom dengan pemangkasan yang jujur dan banner persisten.
 - Undo/redo per gesture, A/B slot penuh, salin L→R, haluskan kurva, reset EQ terpisah dari reset efek.
