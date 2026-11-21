@@ -4,11 +4,14 @@ import android.app.Application
 import androidx.compose.runtime.Stable
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.audio.AudioForegroundService
+import com.example.audio.EqPowerBridge
 import com.example.audio.EqualizerService
 import com.example.audio.StudioAudioEngine
 import com.example.data.PersistedEqSettings
 import com.example.data.PresetRepository
 import com.example.data.PresetCodec
+import com.example.data.autoeq.AutoEqRepository
 import com.example.model.*
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -20,10 +23,20 @@ import kotlin.math.round
 @Stable
 class EqualizerViewModel(
     application: Application,
-    private val repository: PresetRepository
+    private val repository: PresetRepository,
+    private val autoEqRepository: AutoEqRepository
 ) : AndroidViewModel(application) {
     // AndroidViewModelFactory merefleksikan konstruktor (Application) tunggal.
-    constructor(application: Application) : this(application, PresetRepository(application.applicationContext))
+    constructor(application: Application) : this(
+        application,
+        PresetRepository(application.applicationContext),
+        AutoEqRepository(application.applicationContext)
+    )
+    constructor(application: Application, repository: PresetRepository) : this(
+        application,
+        repository,
+        AutoEqRepository(application.applicationContext)
+    )
     private val appContext = application.applicationContext
     private val audioEngine = StudioAudioEngine
     private val _uiState = MutableStateFlow(EqualizerUiState(presets = repository.builtInPresets))
@@ -49,12 +62,21 @@ class EqualizerViewModel(
     private val history get() = histories.getValue(_uiState.value.activeAbSlot)
     private fun entry() = Entry(_uiState.value.soundSnapshot(), _uiState.value.activePresetId)
 
+    private val externalPowerListener: (Boolean) -> Unit = { enabled ->
+        viewModelScope.launch {
+            if (_uiState.value.eqEnabled != enabled) {
+                setMasterPower(enabled, fromExternal = true)
+            }
+        }
+    }
+
     init {
         audioEngine.bindContext(appContext)
-        viewModelScope.launch { EqualizerService.isRunning.collect { running ->
+        EqPowerBridge.registerListener(externalPowerListener)
+        viewModelScope.launch { AudioForegroundService.isRunning.collect { running ->
             _uiState.update { it.copy(backgroundServiceActive = running) }
         } }
-        viewModelScope.launch { EqualizerService.error.collect { message -> if (message != null) reportMessage(message) } }
+        viewModelScope.launch { AudioForegroundService.error.collect { message -> if (message != null) reportMessage(message) } }
         viewModelScope.launch { audioEngine.detectedSessions.collect { sessions ->
             _uiState.update { it.copy(detectedSessions = sessions) }
         } }
@@ -79,22 +101,38 @@ class EqualizerViewModel(
         viewModelScope.launch {
             runCatching {
                 val saved = repository.settingsFlow.first()
+                val autoEqSaved = runCatching { autoEqRepository.stateFlow.first() }.getOrNull()
                 val merge = LibraryMerge.merge(saved.customPresets, customPresets)
                 customPresets = merge.presets
                 val truncationNotice = "Pustaka melebihi 200 preset; hanya 200 dipulihkan, preset sesi ini didahulukan."
                 audioEngine.attachEffects(_uiState.value.audioSourceMode)
+                val restoredAutoEqProfile = if (userInteracted) null else autoEqSaved?.activeProfile
+                val restoredAutoEqGains = if (restoredAutoEqProfile != null) {
+                    autoEqSaved?.activeGainsDb?.takeIf { it.size == 20 }
+                } else {
+                    null
+                }
                 _uiState.update { current ->
                     // Baca capabilities saat commit (bukan snapshot pra-suspensi) agar emisi
                     // collector yang lebih baru tidak tertimpa balik oleh restore.
                     val caps = audioEngine.capabilities.value
-                    val base = if (userInteracted) current else current.withSound(SoundSnapshot(
-                        left = saved.leftBandGainsDb, right = saved.rightBandGainsDb,
-                        linked = saved.stereoLinked, bassEnabled = saved.bassBoostEnabled,
-                        bass = saved.bassBoostStrength, surroundEnabled = saved.virtualizerEnabled,
-                        surround = saved.virtualizerStrength, width = saved.stereoWidth,
-                        balance = saved.stereoBalance, preampEnabled = saved.preampEnabled,
-                        preamp = saved.preampGainDb, limiter = saved.limiterEnabled, reverb = saved.reverbPreset
-                    )).copy(eqEnabled = saved.eqEnabled, activePresetId = saved.activePresetId)
+                    val base = if (userInteracted) current else {
+                        val effectiveLeft = restoredAutoEqGains ?: saved.leftBandGainsDb
+                        val effectiveRight = restoredAutoEqGains ?: saved.rightBandGainsDb
+                        val effectiveLinked = if (restoredAutoEqGains != null) true else saved.stereoLinked
+                        current.withSound(SoundSnapshot(
+                            left = effectiveLeft, right = effectiveRight,
+                            linked = effectiveLinked, bassEnabled = saved.bassBoostEnabled,
+                            bass = saved.bassBoostStrength, surroundEnabled = saved.virtualizerEnabled,
+                            surround = saved.virtualizerStrength, width = saved.stereoWidth,
+                            balance = saved.stereoBalance, preampEnabled = saved.preampEnabled,
+                            preamp = saved.preampGainDb, limiter = saved.limiterEnabled, reverb = saved.reverbPreset
+                        )).copy(
+                            eqEnabled = saved.eqEnabled,
+                            activePresetId = saved.activePresetId,
+                            activeAutoEqProfile = restoredAutoEqProfile
+                        )
+                    }
                     base.copy(presets = repository.builtInPresets + customPresets,
                         favoriteIds = saved.favoriteIds + current.favoriteIds,
                         outputProfiles = (current.outputProfiles + saved.outputProfiles).distinctBy { it.deviceKey },
@@ -105,9 +143,13 @@ class EqualizerViewModel(
                         message = if (merge.truncated) truncationNotice else current.message)
                 }
                 restored = true
+                publishPowerBridge()
                 ensureBackgroundServiceStarted()
                 refreshDerived()
                 syncAudioEngine()
+                if (restoredAutoEqGains != null) {
+                    audioEngine.applyAutoEqCorrection(restoredAutoEqGains)
+                }
                 if (userInteracted || persistRequested) schedulePersist(true)
                 maybeApplyAutoProfile(initialApply = true)
                 // Pesan pemangkasan dikirim ulang TERAKHIR agar tidak tertimpa snackbar
@@ -193,11 +235,16 @@ class EqualizerViewModel(
     fun setSimpleMode(simple: Boolean) { _uiState.update { it.copy(simpleMode = simple) } }
     fun updateSimpleTone(group: Int, value: Float) {
         if (group !in 0..2 || !value.isFinite()) return
+        val wasAutoEqActive = _uiState.value.activeAutoEqProfile != null
         val range = when (group) { 0 -> 0..6; 1 -> 7..13; else -> 14..19 }
-        change { s -> s.copy(bands = s.bands.mapIndexed { i, b ->
-            if (i in range) b.copy(levelDb = round(value.coerceIn(-15f, 15f) * 10) / 10,
-                rightLevelDb = round(value.coerceIn(-15f, 15f) * 10) / 10) else b
-        }, stereoLinked = false, activeChannelFocus = StereoChannelFocus.LEFT) }
+        change { s -> s.copy(
+            activeAutoEqProfile = null,
+            activeQuickTuningId = null,
+            bands = s.bands.mapIndexed { i, b ->
+                if (i in range) b.copy(levelDb = round(value.coerceIn(-15f, 15f) * 10) / 10,
+                    rightLevelDb = round(value.coerceIn(-15f, 15f) * 10) / 10) else b
+            }, stereoLinked = false, activeChannelFocus = StereoChannelFocus.LEFT) }
+        if (wasAutoEqActive) clearDetachedAutoEqPersistence()
     }
     fun selectChannelFocus(focus: StereoChannelFocus) = change { state ->
         state.copy(stereoLinked = focus == StereoChannelFocus.LINKED, activeChannelFocus = focus,
@@ -205,31 +252,178 @@ class EqualizerViewModel(
     }
     fun updateBandLevel(bandIndex: Int, levelDb: Float) {
         if (!levelDb.isFinite()) return
-        change { s -> s.copy(bands = s.bands.map { b ->
-            if (b.index != bandIndex) b else {
-                val gain = round(levelDb.coerceIn(b.minDb, b.maxDb) * 10) / 10
-                when (s.activeChannelFocus) {
-                    StereoChannelFocus.LINKED -> b.copy(levelDb = gain, rightLevelDb = gain)
-                    StereoChannelFocus.LEFT -> b.copy(levelDb = gain)
-                    StereoChannelFocus.RIGHT -> b.copy(rightLevelDb = gain)
+        val wasAutoEqActive = _uiState.value.activeAutoEqProfile != null
+        change { s -> s.copy(
+            activeAutoEqProfile = null,
+            activeQuickTuningId = null,
+            bands = s.bands.map { b ->
+                if (b.index != bandIndex) b else {
+                    val gain = round(levelDb.coerceIn(b.minDb, b.maxDb) * 10) / 10
+                    when (s.activeChannelFocus) {
+                        StereoChannelFocus.LINKED -> b.copy(levelDb = gain, rightLevelDb = gain)
+                        StereoChannelFocus.LEFT -> b.copy(levelDb = gain)
+                        StereoChannelFocus.RIGHT -> b.copy(rightLevelDb = gain)
+                    }
                 }
-            }
-        }) }
+            }) }
+        if (wasAutoEqActive) clearDetachedAutoEqPersistence()
     }
     fun resetBandToZero(index: Int) = updateBandLevel(index, 0f)
-    fun resetAllFlat() = change { s -> s.copy(bands = s.bands.map { it.copy(levelDb = 0f, rightLevelDb = 0f) }) }
+    fun resetAllFlat() {
+        val wasAutoEqActive = _uiState.value.activeAutoEqProfile != null
+        change { s ->
+            s.copy(
+                activeAutoEqProfile = null,
+                activeQuickTuningId = null,
+                bands = s.bands.map { it.copy(levelDb = 0f, rightLevelDb = 0f) }
+            )
+        }
+        if (wasAutoEqActive) clearDetachedAutoEqPersistence()
+    }
+    fun applyQuickTuningPreset(preset: QuickTuningPreset) {
+        endGesture()
+        val wasAutoEqActive = _uiState.value.activeAutoEqProfile != null
+        change { s ->
+            s.copy(
+                activeAutoEqProfile = null,
+                activeQuickTuningId = preset.id,
+                bands = s.bands.mapIndexed { idx, band ->
+                    val target = round(preset.bandGainsDb.getOrElse(idx) { 0f }.coerceIn(band.minDb, band.maxDb) * 10) / 10
+                    when (s.activeChannelFocus) {
+                        StereoChannelFocus.LINKED -> band.copy(levelDb = target, rightLevelDb = target)
+                        StereoChannelFocus.LEFT -> band.copy(levelDb = target)
+                        StereoChannelFocus.RIGHT -> band.copy(rightLevelDb = target)
+                    }
+                }
+            )
+        }
+        if (wasAutoEqActive) clearDetachedAutoEqPersistence()
+        publishPowerBridge()
+    }
+
+    /**
+     * State D helper: when the user manually moves a fader or applies another curve while AutoEQ
+     * is active, detach the AutoEQ profile in audio engine metadata and DataStore while keeping
+     * the user's new manual fader positions intact.
+     */
+    private fun clearDetachedAutoEqPersistence() {
+        audioEngine.detachAutoEqMetadata()
+        publishPowerBridge()
+        persistScope.launch {
+            runCatching { autoEqRepository.clearActiveProfile() }
+        }
+    }
+
+    /**
+     * Applies a 20-band interpolated AutoEQ headphone correction curve in a thread-safe manner,
+     * snapshotting manual EQ settings first so the user can disable AutoEQ and restore them anytime.
+     */
+    fun applyAutoEqProfile(
+        profile: HeadphoneProfile,
+        interpolatedGainsDb: List<Float>,
+        sendToEngine: Boolean = true
+    ) {
+        if (interpolatedGainsDb.size != 20) return
+        endGesture()
+        val current = _uiState.value
+        val shouldBackupManual = current.activeAutoEqProfile == null
+        val backupLeft = if (shouldBackupManual) current.bands.map { it.levelDb } else null
+        val backupRight = if (shouldBackupManual) current.bands.map { it.rightLevelDb } else null
+        val safeGains = interpolatedGainsDb.map { g ->
+            if (g.isFinite()) round(g.coerceIn(-15f, 15f) * 10f) / 10f else 0f
+        }
+
+        // Update UI state (animating faders & Bezier curve smoothly) without snapping audio DSP
+        userInteracted = true
+        val before = entry()
+        _uiState.update { s ->
+            s.copy(
+                activeAutoEqProfile = profile,
+                activeQuickTuningId = null,
+                stereoLinked = true,
+                activeChannelFocus = StereoChannelFocus.LINKED,
+                bands = s.bands.mapIndexed { idx, band ->
+                    band.copy(levelDb = safeGains[idx], rightLevelDb = safeGains[idx])
+                }
+            )
+        }
+        push(before, entry())
+        refreshDerived()
+        schedulePersist()
+
+        if (sendToEngine) {
+            audioEngine.applyAutoEqGains(safeGains.toFloatArray(), rampTimeMs = 100L)
+        }
+        publishPowerBridge()
+        reportMessage("AutoEQ applied: ${profile.name}")
+        persistScope.launch {
+            runCatching {
+                autoEqRepository.saveActiveProfile(
+                    profile = profile,
+                    interpolatedGainsDb = safeGains,
+                    manualBackupLeftDb = backupLeft,
+                    manualBackupRightDb = backupRight
+                )
+            }
+        }
+    }
+
+    /**
+     * Removes the active AutoEQ correction and smoothly restores the user's previous manual 20-band settings.
+     */
+    fun disableAutoEq() {
+        endGesture()
+        persistScope.launch {
+            val (backupLeft, backupRight) = runCatching { autoEqRepository.clearActiveProfile() }
+                .getOrDefault(null to null)
+            val restoreLeft = backupLeft ?: List(20) { 0f }
+            val restoreRight = backupRight ?: restoreLeft
+            val linked = restoreLeft == restoreRight
+
+            userInteracted = true
+            val before = entry()
+            _uiState.update { s ->
+                s.copy(
+                    activeAutoEqProfile = null,
+                    activeQuickTuningId = null,
+                    stereoLinked = linked,
+                    activeChannelFocus = if (linked) StereoChannelFocus.LINKED else StereoChannelFocus.LEFT,
+                    bands = s.bands.mapIndexed { idx, band ->
+                        band.copy(
+                            levelDb = restoreLeft.getOrElse(idx) { 0f },
+                            rightLevelDb = restoreRight.getOrElse(idx) { 0f }
+                        )
+                    }
+                )
+            }
+            push(before, entry())
+            refreshDerived()
+            schedulePersist()
+
+            audioEngine.clearAutoEqCorrection(restoreLeft, restoreRight, rampTimeMs = 100L)
+            publishPowerBridge()
+            reportMessage("AutoEQ disabled. Manual EQ settings restored.")
+        }
+    }
     fun resetAllEffects() = change { s -> s.withSound(SoundSnapshot(
         left = s.bands.map { it.levelDb }, right = s.bands.map { it.rightLevelDb }, linked = s.stereoLinked
     )) }
-    fun smoothCurve() = change { s -> s.copy(bands = s.bands.mapIndexed { i, b ->
-        val prev = s.bands.getOrElse(i - 1) { b }; val next = s.bands.getOrElse(i + 1) { b }
-        b.copy(levelDb = prev.levelDb * 0.25f + b.levelDb * 0.5f + next.levelDb * 0.25f,
-            rightLevelDb = prev.rightLevelDb * 0.25f + b.rightLevelDb * 0.5f + next.rightLevelDb * 0.25f)
-    }) }
+    fun smoothCurve() {
+        val wasAutoEqActive = _uiState.value.activeAutoEqProfile != null
+        change { s -> s.copy(activeAutoEqProfile = null, activeQuickTuningId = null, bands = s.bands.mapIndexed { i, b ->
+            val prev = s.bands.getOrElse(i - 1) { b }; val next = s.bands.getOrElse(i + 1) { b }
+            b.copy(levelDb = prev.levelDb * 0.25f + b.levelDb * 0.5f + next.levelDb * 0.25f,
+                rightLevelDb = prev.rightLevelDb * 0.25f + b.rightLevelDb * 0.5f + next.rightLevelDb * 0.25f)
+        }) }
+        if (wasAutoEqActive) clearDetachedAutoEqPersistence()
+    }
     fun mirrorLeftToRight() = change { s -> s.copy(bands = s.bands.map { it.copy(rightLevelDb = it.levelDb) }) }
     fun selectPreset(preset: EqPreset) {
         endGesture()
-        change { it.withSound(preset.soundSnapshot()).copy(activePresetId = preset.id) }
+        val wasAutoEqActive = _uiState.value.activeAutoEqProfile != null
+        change { it.withSound(preset.soundSnapshot()).copy(activePresetId = preset.id, activeAutoEqProfile = null, activeQuickTuningId = null) }
+        if (wasAutoEqActive) clearDetachedAutoEqPersistence()
+        publishPowerBridge()
     }
     fun saveCustomPreset(name: String) {
         if (name.isBlank()) return
@@ -331,15 +525,32 @@ class EqualizerViewModel(
     fun selectReverbPreset(p: ReverbRoomPreset) = change { it.copy(reverbPreset = p) }
 
     fun toggleMasterPower() {
+        setMasterPower(!_uiState.value.eqEnabled)
+    }
+    fun setMasterPower(enabled: Boolean, fromExternal: Boolean = false) {
         userInteracted = true
-        _uiState.update { it.copy(eqEnabled = !it.eqEnabled) }
-        ensureBackgroundServiceStarted(); syncAudioEngine(); schedulePersist()
+        _uiState.update { it.copy(eqEnabled = enabled) }
+        publishPowerBridge()
+        if (!fromExternal) {
+            ensureBackgroundServiceStarted()
+        }
+        AudioForegroundService.notifyStatusChanged(appContext)
+        syncAudioEngine()
+        schedulePersist()
+    }
+    private fun publishPowerBridge() {
+        val s = _uiState.value
+        val activeLabel = s.activeAutoEqProfile?.name
+            ?: QuickTuningPresets.defaultItems.find { it.id == s.activeQuickTuningId }?.title
+            ?: s.presets.find { it.id == s.activePresetId }?.name
+            ?: "Custom"
+        EqPowerBridge.publishState(appContext, s.eqEnabled, activeLabel)
     }
     fun toggleBackgroundService() {
-        if (EqualizerService.isRunning.value) EqualizerService.stop(appContext) else EqualizerService.start(appContext)
+        if (AudioForegroundService.isRunning.value) AudioForegroundService.stop(appContext) else AudioForegroundService.start(appContext)
     }
     fun ensureBackgroundServiceStarted() {
-        if (!EqualizerService.isRunning.value && _uiState.value.eqEnabled) EqualizerService.start(appContext)
+        if (!AudioForegroundService.isRunning.value && _uiState.value.eqEnabled) AudioForegroundService.start(appContext)
     }
     fun switchAudioSourceMode(mode: AudioSourceMode) {
         if (_uiState.value.audioSourceMode == mode) return
@@ -393,11 +604,12 @@ class EqualizerViewModel(
         }
     }
     override fun onCleared() {
+        EqPowerBridge.unregisterListener(externalPowerListener)
         schedulePersist(true)
         val scopeJob = persistScope.coroutineContext[Job]
         if (persistJob == null) scopeJob?.cancel() else persistJob?.invokeOnCompletion { scopeJob?.cancel() }
         audioEngine.stopTestAudio()
-        if (!EqualizerService.isRunning.value) audioEngine.releaseGlobalAndExternal()
+        if (!AudioForegroundService.isRunning.value && !EqualizerService.isRunning.value) audioEngine.releaseGlobalAndExternal()
         super.onCleared()
     }
 }

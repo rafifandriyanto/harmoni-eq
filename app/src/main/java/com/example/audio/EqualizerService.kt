@@ -28,6 +28,8 @@ class EqualizerService : Service() {
         const val CHANNEL_ID = "harmoni_eq_dsp_channel"
         const val NOTIFICATION_ID = 2026
         const val ACTION_STOP_SERVICE = "com.example.action.STOP_EQ_SERVICE"
+        const val ACTION_TOGGLE_EQ = "com.example.action.TOGGLE_EQ_POWER"
+        const val ACTION_REFRESH_STATUS = "com.example.action.REFRESH_EQ_STATUS"
 
         private val _isRunning = MutableStateFlow(false)
         val isRunning: StateFlow<Boolean> = _isRunning.asStateFlow()
@@ -35,20 +37,35 @@ class EqualizerService : Service() {
         private val _error = MutableStateFlow<String?>(null)
         val error: StateFlow<String?> = _error.asStateFlow()
 
+        fun syncExternalRunningState(running: Boolean) {
+            _isRunning.value = running
+        }
+
         fun start(context: Context) {
             _error.value = null
-            runCatching { ContextCompat.startForegroundService(context, Intent(context, EqualizerService::class.java)) }
-                .onFailure { _error.value = "Layanan gagal dimulai. Buka aplikasi lalu coba lagi: ${it.javaClass.simpleName}" }
+            AudioForegroundService.start(context)
         }
 
         fun stop(context: Context) {
+            AudioForegroundService.stop(context)
             runCatching {
                 context.stopService(Intent(context, EqualizerService::class.java))
+            }
+        }
+
+        fun notifyStatusChanged(context: Context) {
+            AudioForegroundService.notifyStatusChanged(context)
+            if (!_isRunning.value) return
+            runCatching {
+                context.startService(Intent(context, EqualizerService::class.java).apply {
+                    action = ACTION_REFRESH_STATUS
+                })
             }
         }
     }
 
     private var sessionReceiverRegistered = false
+    private var lastDetectedApp: String? = null
 
     private val audioSessionReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -80,12 +97,24 @@ class EqualizerService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_STOP_SERVICE) {
-            stopSelf()
-            return START_NOT_STICKY
+        when (intent?.action) {
+            ACTION_STOP_SERVICE -> {
+                stopSelf()
+                return START_NOT_STICKY
+            }
+            ACTION_TOGGLE_EQ -> {
+                val nextEnabled = !EqPowerBridge.eqEnabled.value
+                EqPowerBridge.dispatchExternalToggle(applicationContext, nextEnabled)
+                refreshNotificationOnly()
+                return START_NOT_STICKY
+            }
+            ACTION_REFRESH_STATUS -> {
+                refreshNotificationOnly()
+                return START_NOT_STICKY
+            }
         }
 
-        val notification = buildNotification(detectedApp = null)
+        val notification = buildNotification(detectedApp = lastDetectedApp)
         runCatching {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 startForeground(
@@ -141,22 +170,37 @@ class EqualizerService : Service() {
     }
 
     private fun updateNotification(detectedPackage: String?) {
-        val nm = getSystemService(NotificationManager::class.java) ?: return
         val appLabel = when {
             detectedPackage?.contains("youtube", ignoreCase = true) == true -> "YouTube"
             detectedPackage?.contains("spotify", ignoreCase = true) == true -> "Spotify"
             !detectedPackage.isNullOrBlank() -> detectedPackage.substringAfterLast('.')
             else -> null
         }
-        nm.notify(NOTIFICATION_ID, buildNotification(appLabel))
+        lastDetectedApp = appLabel
+        refreshNotificationOnly()
+    }
+
+    private fun refreshNotificationOnly() {
+        val nm = getSystemService(NotificationManager::class.java) ?: return
+        nm.notify(NOTIFICATION_ID, buildNotification(lastDetectedApp))
     }
 
     private fun buildNotification(detectedApp: String?): Notification {
+        val eqActive = EqPowerBridge.eqEnabled.value
         val openAppIntent = PendingIntent.getActivity(
             this,
             0,
             Intent(this, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            },
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        val toggleEqIntent = PendingIntent.getService(
+            this,
+            2,
+            Intent(this, EqualizerService::class.java).apply {
+                action = ACTION_TOGGLE_EQ
             },
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
@@ -170,21 +214,23 @@ class EqualizerService : Service() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
+        val statusLabel = if (eqActive) "EQ Active" else "Bypassed"
         val contentText = if (detectedApp != null) {
-            "Sesi $detectedApp terdeteksi • cek efek di konsol"
+            "$statusLabel • Sesi $detectedApp terdeteksi"
         } else {
-            "Pemantau sesi audio berjalan • kompatibilitas bergantung pemutar"
+            "$statusLabel • ${EqPowerBridge.activePresetName.value}"
         }
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentTitle("Layanan Harmoni EQ")
+            .setSmallIcon(R.drawable.ic_qs_eq)
+            .setContentTitle("Harmoni EQ • $statusLabel")
             .setContentText(contentText)
             .setOngoing(true)
             .setSilent(true)
             .setContentIntent(openAppIntent)
-            .addAction(0, "Buka Konsol", openAppIntent)
-            .addAction(0, "Nonaktifkan", stopIntent)
+            .addAction(0, if (eqActive) "Bypass EQ" else "Enable EQ", toggleEqIntent)
+            .addAction(0, "Buka", openAppIntent)
+            .addAction(0, "Hentikan", stopIntent)
             .build()
     }
 

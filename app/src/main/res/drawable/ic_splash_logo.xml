@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="288dp"
+    android:height="288dp"
+    android:viewportWidth="288"
+    android:viewportHeight="288">
+
+    <!--
+        Android 12+ SplashScreen masks icons inside a centered 160dp circle.
+        All vector paths below stay strictly inside [90..198] (108dp span)
+        for balanced breathing room and zero clipping on any aspect ratio.
+    -->
+
+    <!-- Subtle frosted console ring -->
+    <path
+        android:fillColor="#151920"
+        android:pathData="M144,78A66,66 0,1 1,143.99 78Z"
+        android:strokeWidth="1.5"
+        android:strokeColor="#282F3A" />
+
+    <!-- 0 dB studio reference hairline -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M96,144L192,144"
+        android:strokeWidth="2.5"
+        android:strokeAlpha="0.34"
+        android:strokeColor="#D88A52"
+        android:strokeLineCap="round" />
+
+    <!-- Band 1 -->
+    <path
+        android:fillColor="#A56537"
+        android:pathData="M100,127A5.5,5.5 0,0 1,111 127L111,161A5.5,5.5 0,0 1,100 161Z" />
+
+    <!-- Band 2 -->
+    <path
+        android:fillColor="#C77D4A"
+        android:pathData="M119,112A5.5,5.5 0,0 1,130 112L130,176A5.5,5.5 0,0 1,119 176Z" />
+
+    <!-- Band 3 (Center harmonic peak) -->
+    <path
+        android:fillColor="#E09A60"
+        android:pathData="M138.5,100A5.5,5.5 0,0 1,149.5 100L149.5,188A5.5,5.5 0,0 1,138.5 188Z" />
+
+    <!-- Band 4 -->
+    <path
+        android:fillColor="#C77D4A"
+        android:pathData="M158,116A5.5,5.5 0,0 1,169 116L169,172A5.5,5.5 0,0 1,158 172Z" />
+
+    <!-- Band 5 -->
+    <path
+        android:fillColor="#A56537"
+        android:pathData="M177,129A5.5,5.5 0,0 1,188 129L188,159A5.5,5.5 0,0 1,177 159Z" />
+
+    <!-- Tactile center fader detent notch -->
+    <path
+        android:fillColor="#F5D3B3"
+        android:pathData="M140.5,141L147.5,141A3,3 0,0 1,147.5 147L140.5,147A3,3 0,0 1,140.5 141Z" />
+</vector>

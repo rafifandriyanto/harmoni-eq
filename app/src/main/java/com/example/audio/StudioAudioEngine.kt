@@ -29,7 +29,10 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.cos
@@ -354,6 +357,11 @@ object StudioAudioEngine {
     private val filtersLeft = Array(20) { BiquadFilter() }
     private val filtersRight = Array(20) { BiquadFilter() }
 
+    private val paramLock = Any()
+    private val rampMutex = Mutex()
+    private val rampGeneration = AtomicLong(0L)
+    @Volatile private var autoEqRampJob: Job? = null
+
     @Volatile private var eqEnabled: Boolean = true
     @Volatile private var leftGainsDb: List<Float> = List(20) { 0f }
     @Volatile private var rightGainsDb: List<Float> = List(20) { 0f }
@@ -367,6 +375,9 @@ object StudioAudioEngine {
     @Volatile private var preampGainDb: Float = 0f
     @Volatile private var limiterEnabled: Boolean = true
     @Volatile private var reverbPreset: ReverbRoomPreset = ReverbRoomPreset.NONE
+
+    private val _activeAutoEqGains = MutableStateFlow<List<Float>?>(null)
+    val activeAutoEqGains: StateFlow<List<Float>?> = _activeAutoEqGains.asStateFlow()
 
     private var outputMonitor: AudioOutputMonitor? = null
     private val _output = MutableStateFlow(com.example.model.OutputState())
@@ -544,7 +555,12 @@ object StudioAudioEngine {
         preampGainDb: Float,
         limiterEnabled: Boolean,
         reverbPreset: ReverbRoomPreset
-    ) {
+    ) = synchronized(paramLock) {
+        // Manual fader/parameter edits preempt any in-flight AutoEQ gain ramp cleanly.
+        rampGeneration.incrementAndGet()
+        autoEqRampJob?.cancel()
+        autoEqRampJob = null
+
         this.eqEnabled = eqEnabled
         this.leftGainsDb = bands.map { it.levelDb }
         this.rightGainsDb = bands.map { it.rightLevelDb }
@@ -563,6 +579,155 @@ object StudioAudioEngine {
         applyAllParameters()
     }
 
+    /**
+     * Smoothly ramps the active 20-band stereo DSP gains from their current levels to
+     * [targetGains] over [rampTimeMs] on [Dispatchers.Default] to prevent audio pops/clicks.
+     *
+     * Thread-safe with [rampMutex] + [rampGeneration] so manual fader drags preempt an
+     * active ramp cleanly without races or stutter.
+     */
+    fun applyAutoEqGains(
+        targetGains: FloatArray,
+        rampTimeMs: Long = 100L
+    ): Job {
+        require(targetGains.size == 20) { "AutoEQ target gains must contain exactly 20 bands." }
+        val safeTarget = List(20) { idx ->
+            val v = targetGains[idx]
+            if (v.isFinite()) v.coerceIn(-15f, 15f) else 0f
+        }
+        _activeAutoEqGains.value = safeTarget
+        return startSmoothGainRamp(
+            targetLeftDb = safeTarget,
+            targetRightDb = safeTarget,
+            rampTimeMs = rampTimeMs
+        )
+    }
+
+    /**
+     * Convenience wrapper accepting a 20-band [List] and delegating to [applyAutoEqGains]
+     * with smooth pop-free ramping.
+     */
+    fun applyAutoEqCorrection(gainsDb: List<Float>, rampTimeMs: Long = 100L): Job {
+        require(gainsDb.size == 20) { "AutoEQ curve must contain exactly 20 band gains." }
+        return applyAutoEqGains(gainsDb.toFloatArray(), rampTimeMs = rampTimeMs)
+    }
+
+    /**
+     * Thread-safely removes active AutoEQ correction and smoothly ramps back to the user's
+     * manual L/R 20-band gains over [rampTimeMs].
+     */
+    fun clearAutoEqCorrection(
+        restoreLeftDb: List<Float>? = null,
+        restoreRightDb: List<Float>? = null,
+        rampTimeMs: Long = 100L
+    ): Job? {
+        _activeAutoEqGains.value = null
+        val targetLeft = restoreLeftDb?.takeIf { it.size == 20 }
+            ?.map { if (it.isFinite()) it.coerceIn(-15f, 15f) else 0f }
+        val targetRight = restoreRightDb?.takeIf { it.size == 20 }
+            ?.map { if (it.isFinite()) it.coerceIn(-15f, 15f) else 0f }
+            ?: targetLeft
+
+        if (targetLeft == null || targetRight == null) {
+            synchronized(paramLock) {
+                rampGeneration.incrementAndGet()
+                autoEqRampJob?.cancel()
+                autoEqRampJob = null
+                updateBiquadCoefficients()
+                applyAllParameters()
+            }
+            return null
+        }
+
+        return startSmoothGainRamp(
+            targetLeftDb = targetLeft,
+            targetRightDb = targetRight,
+            rampTimeMs = rampTimeMs
+        )
+    }
+
+    /**
+     * Detaches active AutoEQ profile metadata when the user manually moves a fader,
+     * preserving the user's current band gains without snapping or resetting them.
+     */
+    fun detachAutoEqMetadata() {
+        _activeAutoEqGains.value = null
+    }
+
+    internal fun currentBandGainsSnapshot(): Pair<List<Float>, List<Float>> = synchronized(paramLock) {
+        leftGainsDb.toList() to rightGainsDb.toList()
+    }
+
+    internal fun isEqEnabledSnapshot(): Boolean = synchronized(paramLock) {
+        eqEnabled
+    }
+
+    private fun startSmoothGainRamp(
+        targetLeftDb: List<Float>,
+        targetRightDb: List<Float>,
+        rampTimeMs: Long
+    ): Job {
+        val token = rampGeneration.incrementAndGet()
+        autoEqRampJob?.cancel()
+
+        val job = engineScope.launch(Dispatchers.Default) {
+            rampMutex.withLock {
+                if (!isActive || rampGeneration.get() != token) return@withLock
+
+                val (startLeft, startRight) = synchronized(paramLock) {
+                    leftGainsDb.toList() to rightGainsDb.toList()
+                }
+
+                if (rampTimeMs <= 0L) {
+                    commitRampStep(token, targetLeftDb, targetRightDb)
+                    return@withLock
+                }
+
+                val stepIntervalMs = 10L
+                val totalSteps = (rampTimeMs / stepIntervalMs).toInt().coerceIn(4, 30)
+                val delayPerStepMs = (rampTimeMs / totalSteps).coerceAtLeast(1L)
+
+                for (step in 1..totalSteps) {
+                    if (!isActive || rampGeneration.get() != token) return@withLock
+                    val rawProgress = step.toDouble() / totalSteps.toDouble()
+                    // Raised-cosine S-curve avoids discontinuities at ramp start and finish
+                    val eased = (0.5 * (1.0 - cos(PI * rawProgress))).toFloat()
+
+                    val nextLeft = List(20) { i ->
+                        val s = startLeft.getOrElse(i) { 0f }
+                        val t = targetLeftDb[i]
+                        (s + (t - s) * eased).coerceIn(-15f, 15f)
+                    }
+                    val nextRight = List(20) { i ->
+                        val s = startRight.getOrElse(i) { 0f }
+                        val t = targetRightDb[i]
+                        (s + (t - s) * eased).coerceIn(-15f, 15f)
+                    }
+
+                    if (!commitRampStep(token, nextLeft, nextRight)) return@withLock
+                    if (step < totalSteps) {
+                        delay(delayPerStepMs)
+                    }
+                }
+            }
+        }
+        autoEqRampJob = job
+        return job
+    }
+
+    private fun commitRampStep(
+        token: Long,
+        nextLeft: List<Float>,
+        nextRight: List<Float>
+    ): Boolean = synchronized(paramLock) {
+        if (rampGeneration.get() != token) return false
+        this.leftGainsDb = nextLeft
+        this.rightGainsDb = nextRight
+        updateBiquadCoefficients()
+        applyAllParameters()
+        true
+    }
+
     private fun updateBiquadCoefficients() {
         val sampleRate = 44100.0
         val q = 2.6
@@ -575,7 +740,7 @@ object StudioAudioEngine {
         }
     }
 
-    private fun applyAllParameters() {
+    private fun applyAllParameters() = synchronized(paramLock) {
         globalSessionChain?.let { applyToChain(it) }
         externalSessionChains.values.forEach { applyToChain(it) }
         publishCapabilities()

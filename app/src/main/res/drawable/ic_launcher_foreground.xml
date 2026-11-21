@@ -1,8 +1,48 @@
 <?xml version="1.0" encoding="utf-8"?>
-<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
-    <item
-        android:width="66dp"
-        android:height="66dp"
-        android:drawable="@drawable/ic_eq_logo_1794795692913"
-        android:gravity="center" />
-</layer-list>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Centered strictly within the 66dp adaptive icon safe zone (26..82) -->
+
+    <!-- Subtle 0 dB center reference axis -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M28,54L80,54"
+        android:strokeWidth="1.4"
+        android:strokeAlpha="0.34"
+        android:strokeColor="#D88A52"
+        android:strokeLineCap="round" />
+
+    <!-- Band 1 (outer left) -->
+    <path
+        android:fillColor="#A56537"
+        android:pathData="M30.5,45A3,3 0,0 1,36.5 45L36.5,63A3,3 0,0 1,30.5 63Z" />
+
+    <!-- Band 2 -->
+    <path
+        android:fillColor="#C77D4A"
+        android:pathData="M40.75,37A3,3 0,0 1,46.75 37L46.75,71A3,3 0,0 1,40.75 71Z" />
+
+    <!-- Band 3 (center peak) -->
+    <path
+        android:fillColor="#E09A60"
+        android:pathData="M51,31A3,3 0,0 1,57 31L57,77A3,3 0,0 1,51 77Z" />
+
+    <!-- Band 4 -->
+    <path
+        android:fillColor="#C77D4A"
+        android:pathData="M61.25,39A3,3 0,0 1,67.25 39L67.25,69A3,3 0,0 1,61.25 69Z" />
+
+    <!-- Band 5 (outer right) -->
+    <path
+        android:fillColor="#A56537"
+        android:pathData="M71.5,46A3,3 0,0 1,77.5 46L77.5,62A3,3 0,0 1,71.5 62Z" />
+
+    <!-- Tactile center fader detent notch -->
+    <path
+        android:fillColor="#F5D3B3"
+        android:pathData="M52,52.4L56,52.4A1.6,1.6 0,0 1,56 55.6L52,55.6A1.6,1.6 0,0 1,52 52.4Z" />
+</vector>

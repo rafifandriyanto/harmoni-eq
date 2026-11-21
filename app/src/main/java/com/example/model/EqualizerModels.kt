@@ -77,6 +77,8 @@ data class EqualizerUiState(
     val bands: List<EqBand> = default20Bands(),
     val presets: List<EqPreset> = emptyList(),
     val activePresetId: String = "warm_studio",
+    val activeQuickTuningId: String? = null,
+    val activeAutoEqProfile: HeadphoneProfile? = null,
     val bassBoostEnabled: Boolean = true,
     val bassBoostStrength: Float = 0.30f,
     val virtualizerEnabled: Boolean = true,

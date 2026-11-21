@@ -1,5 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
-<shape xmlns:android="http://schemas.android.com/apk/res/android"
-    android:shape="rectangle">
-    <solid android:color="#0B0F17" />
-</shape>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Obsidian Studio Console background matching #0E1013 canvas -->
+    <path
+        android:fillColor="#0E1013"
+        android:pathData="M0,0H108V108H0Z" />
+
+    <!-- Subtle recessed console glass bezel -->
+    <path
+        android:fillColor="#151920"
+        android:pathData="M54,18A36,36 0,1 1,53.99 18Z"
+        android:strokeWidth="1"
+        android:strokeColor="#272D38" />
+</vector>

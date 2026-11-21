@@ -52,8 +52,11 @@ object GlassTokens {
     // Scrim dialog (solid 40% hitam, bukan blur)
     val DialogScrim: Color = Color.Black.copy(alpha = 0.40f)
 
-    // Blur hanya untuk API 31+ via RenderEffect, dibatasi ke area panel
+    // Blur dinamis untuk API 31+ via RenderEffect, dibatasi ke backdrop panel
     const val BlurRadiusPx: Float = 20f
+    val IdleBlurRadius: Dp = 20.dp
+    val DragBlurRadius: Dp = 8.dp
+    const val BlurTransitionDurationMs: Int = 140
     const val IdleRestoreDelayMs: Long = 150L
 
     // Durasi motion minimalis (tanpa bounce)
@@ -92,6 +95,11 @@ val LocalHarmoniPalette = staticCompositionLocalOf<HarmoniPalette> {
 
 /**
  * True saat pengguna sedang drag fader atau scroll list.
- * Mematikan RenderEffect sementara dan mengembalikannya setelah idle 150ms.
+ * Menurunkan beban GPU blur sementara agar animasi tetap 120fps.
  */
 val LocalGlassBlurSuppressed = compositionLocalOf { false }
+
+/**
+ * Radius blur dinamis untuk surface kaca (20.dp saat idle -> 8.dp saat drag/interaksi aktif).
+ */
+val LocalGlassBlurRadius = compositionLocalOf { GlassTokens.IdleBlurRadius }

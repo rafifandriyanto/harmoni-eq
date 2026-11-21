@@ -9,6 +9,9 @@ import android.provider.Settings
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -33,10 +36,9 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Bookmark
 import androidx.compose.material.icons.rounded.GraphicEq
-import androidx.compose.material.icons.rounded.HelpOutline
-import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.PlayCircle
 import androidx.compose.material.icons.rounded.PowerSettingsNew
+import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -55,7 +57,9 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -65,15 +69,23 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.model.AudioSourceMode
 import com.example.model.ConsoleTab
+import com.example.ui.components.AutoEqBottomSheet
 import com.example.ui.components.NameDialog
 import com.example.ui.components.OutputSettingsSheet
 import com.example.ui.components.glass.GlassDialog
@@ -82,10 +94,13 @@ import com.example.ui.components.glass.StaticRadialBackdrop
 import com.example.ui.screens.EffectsScreen
 import com.example.ui.screens.EqualizerScreen
 import com.example.ui.screens.PresetsScreen
+import com.example.ui.screens.ReliabilityScreen
 import com.example.ui.screens.YouTubeScreen
 import com.example.ui.theme.GlassTokens
+import com.example.ui.theme.LocalGlassBlurRadius
 import com.example.ui.theme.LocalGlassBlurSuppressed
 import com.example.ui.theme.LocalHarmoniPalette
+import com.example.ui.theme.LocalThemeController
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -94,6 +109,8 @@ import kotlinx.coroutines.withContext
 fun HarmoniEqApp(viewModel: EqualizerViewModel) {
     val context = LocalContext.current
     val palette = LocalHarmoniPalette.current
+    val reduceMotion = LocalThemeController.current.effectiveReduceMotion
+    val haptics = LocalHapticFeedback.current
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
@@ -102,14 +119,57 @@ fun HarmoniEqApp(viewModel: EqualizerViewModel) {
     var openedYouTube by rememberSaveable { mutableStateOf(false) }
     var save by remember { mutableStateOf(false) }
     var devices by remember { mutableStateOf(false) }
+    var autoEqOpen by remember { mutableStateOf(false) }
+    var reliabilityOpen by rememberSaveable { mutableStateOf(false) }
     var help by remember { mutableStateOf(false) }
     var importText by remember { mutableStateOf<String?>(null) }
     var exportText by remember { mutableStateOf<String?>(null) }
     var ioBusy by remember { mutableStateOf(false) }
 
     var isScrolledUnderTopBar by remember { mutableStateOf(false) }
+    var isDraggingOrScrolling by remember { mutableStateOf(false) }
+    var consoleRevealed by remember { mutableStateOf(reduceMotion) }
 
-    val overlayOpen = save || devices || help || importText != null
+    LaunchedEffect(Unit) {
+        consoleRevealed = true
+    }
+
+    val consoleEntranceAlphaState = animateFloatAsState(
+        targetValue = if (consoleRevealed) 1f else 0.94f,
+        animationSpec = tween(durationMillis = if (reduceMotion) 0 else 180),
+        label = "console_entrance_alpha"
+    )
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val reliabilityManager = remember(context) { ReliabilityManager(context) }
+    val reliabilitySetupCompleted by reliabilityManager.setupCompletedFlow.collectAsStateWithLifecycle(initialValue = false)
+    var reliabilityStatus by remember { mutableStateOf(reliabilityManager.inspectStatus()) }
+
+    LaunchedEffect(state.backgroundServiceActive, devices, reliabilityOpen) {
+        reliabilityStatus = reliabilityManager.inspectStatus()
+    }
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                reliabilityStatus = reliabilityManager.inspectStatus()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    val overlayOpen = save || devices || autoEqOpen || reliabilityOpen || help || importText != null
+    val autoEqViewModel: AutoEqViewModel = viewModel()
+
+    // State D synchronization: if user manually edits a fader or preset, keep AutoEqViewModel detached
+    LaunchedEffect(state.activeAutoEqProfile) {
+        if (state.activeAutoEqProfile == null) {
+            val currentAutoEq = autoEqViewModel.uiState.value as? AutoEqUiState.Success
+            if (currentAutoEq?.selectedProfile != null) {
+                autoEqViewModel.detachAutoEq()
+            }
+        }
+    }
 
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         viewModel.toggleBackgroundService()
@@ -198,7 +258,9 @@ fun HarmoniEqApp(viewModel: EqualizerViewModel) {
             onPresets = { select(ConsoleTab.PRESETS) },
             onYouTube = { select(ConsoleTab.YOUTUBE) },
             onDevices = { devices = true },
+            onAutoEq = { autoEqOpen = true },
             onSave = { save = true },
+            onInteractionChange = { isDraggingOrScrolling = it },
             onScrolledUnderChange = { isScrolledUnderTopBar = it },
             modifier = modifier
         )
@@ -231,11 +293,30 @@ fun HarmoniEqApp(viewModel: EqualizerViewModel) {
         }
     }
 
-    CompositionLocalProvider(LocalGlassBlurSuppressed provides overlayOpen) {
+    val targetGlassBlurRadius by remember {
+        derivedStateOf {
+            if (isDraggingOrScrolling || overlayOpen) {
+                GlassTokens.DragBlurRadius
+            } else {
+                GlassTokens.IdleBlurRadius
+            }
+        }
+    }
+    val animatedGlassBlurRadius by animateDpAsState(
+        targetValue = targetGlassBlurRadius,
+        animationSpec = tween(durationMillis = if (reduceMotion) 0 else GlassTokens.BlurTransitionDurationMs),
+        label = "dynamic_glass_blur_radius"
+    )
+
+    CompositionLocalProvider(
+        LocalGlassBlurSuppressed provides (overlayOpen || isDraggingOrScrolling),
+        LocalGlassBlurRadius provides animatedGlassBlurRadius
+    ) {
         Box(
             Modifier
                 .fillMaxSize()
                 .background(palette.canvas)
+                .graphicsLayer { alpha = consoleEntranceAlphaState.value }
         ) {
             BoxWithConstraints(Modifier.fillMaxSize()) {
                 val rail = maxWidth >= 600.dp
@@ -252,19 +333,25 @@ fun HarmoniEqApp(viewModel: EqualizerViewModel) {
                             title = "HARMONI",
                             subtitle = "Equalizer 20-band",
                             isScrolledUnder = isScrolledUnderTopBar && !overlayOpen,
-                            compact = compactHeader
+                            compact = compactHeader,
+                            eqActive = state.eqEnabled,
+                            autoEqActive = state.activeAutoEqProfile != null
                         ) {
                             IconButton(
                                 onClick = { devices = true },
                                 modifier = Modifier.testTag("theme_settings_button")
                             ) {
-                                Icon(Icons.Rounded.Palette, "Tema & pengaturan", tint = palette.textSecondary)
-                            }
-                            IconButton(onClick = { help = true }) {
-                                Icon(Icons.Rounded.HelpOutline, "Panduan & bantuan", tint = palette.textSecondary)
+                                Icon(
+                                    imageVector = Icons.Rounded.Settings,
+                                    contentDescription = "Pengaturan",
+                                    tint = palette.textSecondary
+                                )
                             }
                             TextButton(
-                                onClick = viewModel::toggleMasterPower,
+                                onClick = {
+                                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    viewModel.toggleMasterPower()
+                                },
                                 modifier = Modifier.testTag("master_power_button")
                             ) {
                                 Icon(
@@ -276,7 +363,9 @@ fun HarmoniEqApp(viewModel: EqualizerViewModel) {
                                 Spacer(Modifier.width(GlassTokens.Space4))
                                 Text(
                                     if (state.eqEnabled) "EQ ON" else "BYPASS",
-                                    color = if (state.eqEnabled) palette.accent else palette.textMuted
+                                    color = if (state.eqEnabled) palette.accent else palette.textMuted,
+                                    maxLines = 1,
+                                    softWrap = false
                                 )
                             }
                         }
@@ -401,12 +490,45 @@ fun HarmoniEqApp(viewModel: EqualizerViewModel) {
         OutputSettingsSheet(
             state = state,
             vm = viewModel,
+            reliabilityStatus = reliabilityStatus,
+            reliabilitySetupCompleted = reliabilitySetupCompleted,
+            onOpenReliability = {
+                devices = false
+                reliabilityOpen = true
+            },
+            onOpenHelp = {
+                devices = false
+                help = true
+            },
             onDismiss = { devices = false },
             onBluetoothSettings = {
                 runCatching { context.startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS)) }
                     .onFailure { viewModel.reportMessage("Pengaturan Bluetooth tidak tersedia di perangkat ini.") }
             },
             onService = toggleService
+        )
+    }
+    if (reliabilityOpen) {
+        ReliabilityScreen(
+            reliabilityManager = reliabilityManager,
+            onBack = { reliabilityOpen = false },
+            onReportMessage = { viewModel.reportMessage(it) }
+        )
+    }
+    if (autoEqOpen) {
+        AutoEqBottomSheet(
+            autoEqViewModel = autoEqViewModel,
+            onDismiss = { autoEqOpen = false },
+            onApplyProfile = { profile, gainsArray ->
+                // AutoEqViewModel.selectProfile already ramped StudioAudioEngine smoothly over 100ms
+                viewModel.applyAutoEqProfile(profile, gainsArray.toList(), sendToEngine = false)
+            },
+            onDisableAutoEq = {
+                viewModel.disableAutoEq()
+            },
+            onShowMessage = { message ->
+                viewModel.reportMessage(message)
+            }
         )
     }
     importText?.let { json ->

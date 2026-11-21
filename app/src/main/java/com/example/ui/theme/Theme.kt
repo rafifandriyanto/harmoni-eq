@@ -1,12 +1,15 @@
 package com.example.ui.theme
 
 import android.app.Activity
+import android.os.Build
 import android.provider.Settings
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.dynamicDarkColorScheme
+import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -59,12 +62,35 @@ fun HarmoniEqTheme(
         }.getOrDefault(false)
     }
 
-    val palette = remember(isDark, settings.accent, settings.customHex) {
-        buildHarmoniPalette(isDark, settings.accent, settings.customHex)
+    val useDynamicColor = settings.dynamicColor && !inspection && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+    val dynamicScheme = remember(useDynamicColor, isDark, context) {
+        if (useDynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            runCatching {
+                if (isDark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+            }.getOrNull()
+        } else {
+            null
+        }
     }
 
-    val colorScheme = remember(palette) {
-        if (palette.isDark) {
+    val palette = remember(isDark, settings.accent, settings.customHex, dynamicScheme) {
+        if (dynamicScheme != null) {
+            buildDynamicHarmoniPalette(isDark, dynamicScheme)
+        } else {
+            buildHarmoniPalette(isDark, settings.accent, settings.customHex)
+        }
+    }
+
+    val colorScheme = remember(palette, dynamicScheme) {
+        if (dynamicScheme != null) {
+            dynamicScheme.copy(
+                primary = palette.accent,
+                onPrimary = palette.onAccent,
+                onSurface = palette.textPrimary,
+                onSurfaceVariant = palette.textSecondary,
+                onBackground = palette.textPrimary
+            )
+        } else if (palette.isDark) {
             darkColorScheme(
                 primary = palette.accent,
                 onPrimary = palette.onAccent,
@@ -116,8 +142,10 @@ fun HarmoniEqTheme(
             setThemeMode = { m -> scope.launch { repository?.setThemeMode(m) } },
             setAccentPreset = { a -> scope.launch { repository?.setAccentPreset(a) } },
             setCustomHex = { h -> scope.launch { repository?.setCustomHex(h) } },
+            setDynamicColor = { d -> scope.launch { repository?.setDynamicColor(d) } },
             setReduceTransparency = { r -> scope.launch { repository?.setReduceTransparency(r) } },
-            setReduceMotion = { m -> scope.launch { repository?.setReduceMotion(m) } }
+            setReduceMotion = { m -> scope.launch { repository?.setReduceMotion(m) } },
+            dismissAdvancedTip = { scope.launch { repository?.setAdvancedTipDismissed(true) } }
         )
     }
 

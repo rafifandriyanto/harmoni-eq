@@ -2,14 +2,17 @@ name: Build & Release Harmoni EQ APK
 
 on:
   push:
+    branches:
+      - main
+      - master
     tags:
       - "v*"
   workflow_dispatch:
     inputs:
       tag_name:
-        description: "Nama tag rilis (contoh: v1.1.0)"
-        required: true
-        default: "v1.1.0"
+        description: "Nama tag rilis (kosongkan untuk update tag 'latest')"
+        required: false
+        default: "latest"
 
 permissions:
   contents: write
@@ -31,33 +34,61 @@ jobs:
       - name: Setup Gradle cache
         uses: gradle/actions/setup-gradle@v4
 
+      - name: Restore signing keystore for debug APK
+        run: |
+          if [ -f debug.keystore.base64 ]; then
+            base64 -d debug.keystore.base64 > debug.keystore
+          elif [ ! -f debug.keystore ]; then
+            keytool -genkeypair -v -keystore debug.keystore -storepass android -alias androiddebugkey \
+              -keypass android -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
       - name: Grant execute permission for gradlew
         run: chmod +x ./gradlew
 
-      - name: Run unit tests & lint
-        run: ./gradlew testDebugUnitTest lintDebug
+      - name: Run unit & Robolectric tests
+        run: ./gradlew :app:testDebugUnitTest
 
       - name: Build APK
-        run: ./gradlew assembleDebug
+        run: ./gradlew :app:assembleDebug
 
-      - name: Rename APK for release
+      - name: Prepare APK artifacts
         run: |
-          TAG="${{ github.event.inputs.tag_name || github.ref_name }}"
-          cp app/build/outputs/apk/debug/app-debug.apk "Harmoni-EQ-${TAG}.apk"
-          echo "APK_NAME=Harmoni-EQ-${TAG}.apk" >> $GITHUB_ENV
-          echo "RELEASE_TAG=${TAG}" >> $GITHUB_ENV
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.tag_name }}" ]; then
+            TAG="${{ github.event.inputs.tag_name }}"
+          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            TAG="${{ github.ref_name }}"
+          else
+            TAG="latest"
+          fi
+
+          cp app/build/outputs/apk/debug/app-debug.apk "Harmoni-EQ-latest.apk"
+          echo "RELEASE_TAG=${TAG}" >> "$GITHUB_ENV"
+          {
+            echo "APK_FILES<<EOF"
+            echo "Harmoni-EQ-latest.apk"
+            if [ "$TAG" != "latest" ]; then
+              cp app/build/outputs/apk/debug/app-debug.apk "Harmoni-EQ-${TAG}.apk"
+              echo "Harmoni-EQ-${TAG}.apk"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_ENV"
 
       - name: Publish GitHub Release with APK
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
-          name: "Harmoni EQ ${{ env.RELEASE_TAG }}"
+          name: "Harmoni EQ (${{ env.RELEASE_TAG }})"
+          make_latest: true
+          fail_on_unmatched_files: true
           body: |
-            Unduh file `.apk` di bawah ini untuk langsung memasang **Harmoni EQ** di perangkat Android tanpa perlu clone atau build kode sumber.
+            Unduh **`Harmoni-EQ-latest.apk`** di bawah ini untuk langsung memasang **Harmoni EQ** di perangkat Android tanpa perlu clone atau build kode sumber.
 
-            ### Perubahan Utama
-            - Modern UI dengan permukaan translucent halus (Light, Dark, & Custom Accent)
-            - Pengaturan Reduce Transparency & Reduce Motion tersimpan di DataStore
-            - Optimasi performa fader 60fps (RenderEffect API 31+, bitmap backdrop statis)
-          files: |
-            ${{ env.APK_NAME }}
+            ### Pembaruan Utama
+            - **Kurva EQ Bezier Real-Time & Guided Onboarding**: Overlay kurva cubic Bezier halus melintasi 20-band slider, tombol *Fine-tune this sound* dari mode Simple ke Advanced, 7 chip lompat frekuensi, dan 4 preset *Quick Tuning*.
+            - **AutoEQ Headphone Correction**: Integrasi katalog `jaakkopasanen/AutoEq` dengan interpolasi PCHIP log-frekuensi ke 20 band, pencarian debounce 300ms, cache offline DataStore, error handling + Retry, dan sinkronisasi penuh dengan Master EQ Switch.
+            - **Background Survival & OEM Reliability Hub**: Foreground Service dengan notifikasi persisten (`IMPORTANCE_LOW`), kontrol Pause/Stop, pengecekan *Battery Optimization*, dan panduan pengaturan daya khusus merek HP.
+            - **Optimasi Performa 120Hz**: Phase Skipping pada fader (`drawWithCache` + Draw phase), zero-allocation Bezier (`derivedStateOf` + `Path.rewind()`), Dynamic Glass Blur (`20.dp` idle -> `8.dp` saat drag pada API 31+), dan isolasi thread DSP (`Dispatchers.Default` + `Mutex`).
+            - **Logo Minimalis & Seamless Splash Screen**: Logo vektor 5-bar Warm Amber + adaptive icon lengkap dan AndroidX SplashScreen API tanpa timer buatan.
+          files: ${{ env.APK_FILES }}

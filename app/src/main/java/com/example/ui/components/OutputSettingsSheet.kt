@@ -1,7 +1,9 @@
 package com.example.ui.components
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -11,17 +13,25 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
+import androidx.compose.material.icons.rounded.HelpOutline
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -34,11 +44,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.model.EqualizerUiState
 import com.example.model.OutputDevice
 import com.example.ui.EqualizerViewModel
+import com.example.ui.ReliabilityStatus
 import com.example.ui.components.glass.GlassBottomSheet
+import com.example.ui.screens.SystemReliabilityLinkCard
 import com.example.ui.theme.AccentPreset
 import com.example.ui.theme.GlassTokens
 import com.example.ui.theme.LocalHarmoniPalette
@@ -51,6 +65,10 @@ import com.example.ui.theme.isValidHexColor
 fun OutputSettingsSheet(
     state: EqualizerUiState,
     vm: EqualizerViewModel,
+    reliabilityStatus: ReliabilityStatus,
+    reliabilitySetupCompleted: Boolean,
+    onOpenReliability: () -> Unit,
+    onOpenHelp: () -> Unit = {},
     onDismiss: () -> Unit,
     onBluetoothSettings: () -> Unit,
     onService: () -> Unit
@@ -70,6 +88,77 @@ fun OutputSettingsSheet(
                 .padding(GlassTokens.Space24),
             verticalArrangement = Arrangement.spacedBy(GlassTokens.Space16)
         ) {
+            // Bagian 0: System Reliability (Keep EQ Alive)
+            SectionHeading(
+                "System Reliability",
+                "Ensure foreground service, battery exemption, notification access, and OEM autostart stay configured."
+            )
+            SystemReliabilityLinkCard(
+                status = reliabilityStatus,
+                setupCompleted = reliabilitySetupCompleted,
+                onOpenReliability = onOpenReliability
+            )
+
+            OutlinedCard(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 64.dp)
+                    .clip(RoundedCornerShape(16.dp))
+                    .clickable(role = Role.Button, onClick = onOpenHelp)
+                    .testTag("settings_help_button"),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.outlinedCardColors(
+                    containerColor = palette.surfaceElevated
+                ),
+                border = BorderStroke(1.dp, palette.borderSubtle)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = GlassTokens.Space16, vertical = GlassTokens.Space12),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(GlassTokens.Space12)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(40.dp)
+                            .clip(CircleShape)
+                            .background(palette.accent.copy(alpha = 0.14f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.HelpOutline,
+                            contentDescription = null,
+                            tint = palette.accent,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        Text(
+                            text = "Panduan & cek suara",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = palette.textPrimary
+                        )
+                        Text(
+                            text = "Langkah awal, audio uji, dan solusi jika efek EQ tidak terdengar.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = palette.textSecondary
+                        )
+                    }
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowRight,
+                        contentDescription = "Buka panduan dan cek suara",
+                        tint = palette.textSecondary
+                    )
+                }
+            }
+
+            HorizontalDivider(color = palette.borderSubtle)
+
             // Bagian 1: Tampilan, Tema Kustom & Aksesibilitas
             SectionHeading(
                 "Tampilan & tema",
@@ -90,12 +179,20 @@ fun OutputSettingsSheet(
 
                 HorizontalDivider(color = palette.borderSubtle)
 
+                ToggleRow(
+                    title = "Material You (Dynamic Color)",
+                    description = "Match system wallpaper colors on Android 12+ with 4.5:1 text contrast.",
+                    checked = themeSettings.dynamicColor,
+                    onToggle = { themeController.setDynamicColor(!themeSettings.dynamicColor) },
+                    tag = "toggle_dynamic_color"
+                )
+
                 Text("Warna aksen tunggal", style = MaterialTheme.typography.titleSmall, color = palette.textPrimary)
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(GlassTokens.Space8)) {
                     AccentPreset.entries.forEach { preset ->
                         val previewColor = if (palette.isDark) preset.darkColor else preset.lightColor
                         FilterChip(
-                            selected = themeSettings.accent == preset,
+                            selected = !themeSettings.dynamicColor && themeSettings.accent == preset,
                             onClick = { themeController.setAccentPreset(preset) },
                             leadingIcon = {
                                 Box(

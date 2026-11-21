@@ -69,8 +69,10 @@ data class ThemeSettings(
     val mode: ThemeMode = ThemeMode.SYSTEM,
     val accent: AccentPreset = AccentPreset.AMBER,
     val customHex: String = "#C77D4A",
+    val dynamicColor: Boolean = true,
     val reduceTransparency: Boolean = false,
-    val reduceMotion: Boolean = false
+    val reduceMotion: Boolean = false,
+    val advancedTipDismissed: Boolean = false
 )
 
 @Immutable
@@ -80,8 +82,10 @@ data class ThemeController(
     val setThemeMode: (ThemeMode) -> Unit = {},
     val setAccentPreset: (AccentPreset) -> Unit = {},
     val setCustomHex: (String) -> Unit = {},
+    val setDynamicColor: (Boolean) -> Unit = {},
     val setReduceTransparency: (Boolean) -> Unit = {},
-    val setReduceMotion: (Boolean) -> Unit = {}
+    val setReduceMotion: (Boolean) -> Unit = {},
+    val dismissAdvancedTip: () -> Unit = {}
 )
 
 val LocalThemeController = staticCompositionLocalOf { ThemeController() }
@@ -93,8 +97,10 @@ class ThemePreferencesRepository(context: Context) {
         val THEME_MODE = stringPreferencesKey("theme_mode")
         val ACCENT_PRESET = stringPreferencesKey("accent_preset")
         val CUSTOM_HEX = stringPreferencesKey("custom_hex")
+        val DYNAMIC_COLOR = booleanPreferencesKey("dynamic_color")
         val REDUCE_TRANSPARENCY = booleanPreferencesKey("reduce_transparency")
         val REDUCE_MOTION = booleanPreferencesKey("reduce_motion")
+        val ADVANCED_TIP_DISMISSED = booleanPreferencesKey("advanced_tip_dismissed")
     }
 
     val settingsFlow: Flow<ThemeSettings> = store.data.map { prefs ->
@@ -109,8 +115,10 @@ class ThemePreferencesRepository(context: Context) {
             mode = mode,
             accent = accent,
             customHex = hex,
+            dynamicColor = prefs[Keys.DYNAMIC_COLOR] ?: true,
             reduceTransparency = prefs[Keys.REDUCE_TRANSPARENCY] ?: false,
-            reduceMotion = prefs[Keys.REDUCE_MOTION] ?: false
+            reduceMotion = prefs[Keys.REDUCE_MOTION] ?: false,
+            advancedTipDismissed = prefs[Keys.ADVANCED_TIP_DISMISSED] ?: false
         )
     }
 
@@ -119,7 +127,10 @@ class ThemePreferencesRepository(context: Context) {
     }
 
     suspend fun setAccentPreset(preset: AccentPreset) {
-        store.edit { it[Keys.ACCENT_PRESET] = preset.name }
+        store.edit {
+            it[Keys.ACCENT_PRESET] = preset.name
+            it[Keys.DYNAMIC_COLOR] = false
+        }
     }
 
     suspend fun setCustomHex(hex: String) {
@@ -127,7 +138,12 @@ class ThemePreferencesRepository(context: Context) {
         store.edit {
             it[Keys.CUSTOM_HEX] = normalized
             it[Keys.ACCENT_PRESET] = AccentPreset.CUSTOM.name
+            it[Keys.DYNAMIC_COLOR] = false
         }
+    }
+
+    suspend fun setDynamicColor(enabled: Boolean) {
+        store.edit { it[Keys.DYNAMIC_COLOR] = enabled }
     }
 
     suspend fun setReduceTransparency(enabled: Boolean) {
@@ -136,6 +152,10 @@ class ThemePreferencesRepository(context: Context) {
 
     suspend fun setReduceMotion(enabled: Boolean) {
         store.edit { it[Keys.REDUCE_MOTION] = enabled }
+    }
+
+    suspend fun setAdvancedTipDismissed(dismissed: Boolean) {
+        store.edit { it[Keys.ADVANCED_TIP_DISMISSED] = dismissed }
     }
 }
 

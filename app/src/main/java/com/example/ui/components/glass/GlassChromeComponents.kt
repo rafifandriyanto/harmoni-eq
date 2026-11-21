@@ -2,6 +2,7 @@ package com.example.ui.components.glass
 
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -27,6 +28,7 @@ import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Headphones
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -44,12 +46,16 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.example.R
 import com.example.ui.theme.GlassTokens
 import com.example.ui.theme.HarmoniEqTheme
 import com.example.ui.theme.LocalHarmoniPalette
@@ -58,8 +64,9 @@ import com.example.ui.theme.ThemeMode
 import com.example.ui.theme.ThemeSettings
 
 /**
- * GlassTopBar: Mengambang di atas fader dengan Thick Tactile GlassSurface saat scroll,
- * transisi halus ke near-solid saat berhenti.
+ * GlassTopBar: Floating top app bar with persistent subtle EQ active indicator
+ * (accent-tinted background wash + live status dot + crisp bottom accent hairline)
+ * visible across all screens, respecting Reduce Motion and WCAG 4.5:1 contrast.
  */
 @Composable
 fun GlassTopBar(
@@ -67,6 +74,8 @@ fun GlassTopBar(
     subtitle: String? = null,
     isScrolledUnder: Boolean,
     compact: Boolean = false,
+    eqActive: Boolean = true,
+    autoEqActive: Boolean = false,
     actions: @Composable RowScope.() -> Unit = {}
 ) {
     val palette = LocalHarmoniPalette.current
@@ -87,6 +96,14 @@ fun GlassTopBar(
         label = "top_bar_opacity"
     )
 
+    val activeTintAlpha by animateFloatAsState(
+        targetValue = if (eqActive) (if (palette.isDark) 0.11f else 0.08f) else 0f,
+        animationSpec = tween(durationMillis = if (reduceMotion) 0 else 200),
+        label = "top_bar_eq_tint"
+    )
+
+    val statusDotColor = if (eqActive) palette.statusSuccess else palette.textMuted
+
     GlassSurface(
         modifier = Modifier
             .fillMaxWidth()
@@ -94,37 +111,151 @@ fun GlassTopBar(
             .padding(top = if (isScrolledUnder) GlassTokens.Space4 else 0.dp),
         variant = if (isScrolledUnder) GlassVariant.CHROME else GlassVariant.NEAR_SOLID,
         cornerRadius = if (isScrolledUnder) GlassTokens.CornerRadius else 0.dp,
+        accentBorder = eqActive && isScrolledUnder,
         alphaBoost = if (isScrolledUnder) 0f else (animatedAlpha - GlassTokens.NearSolidAlpha)
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .windowInsetsPadding(WindowInsets.statusBars)
-                .padding(horizontal = GlassTokens.Space16, vertical = GlassTokens.Space12)
+                .background(palette.accent.copy(alpha = activeTintAlpha))
         ) {
-            if (compact) {
-                Text(title, style = MaterialTheme.typography.titleLarge, color = palette.textPrimary)
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.End,
-                    verticalAlignment = Alignment.CenterVertically,
-                    content = actions
-                )
-            } else {
-                Row(
-                    Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text(title, style = MaterialTheme.typography.titleLarge, color = palette.textPrimary)
-                        if (subtitle != null) {
-                            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = palette.textMuted)
-                        }
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .windowInsetsPadding(WindowInsets.statusBars)
+                    .padding(horizontal = GlassTokens.Space16, vertical = GlassTokens.Space8)
+            ) {
+                if (compact) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(GlassTokens.Space8)
+                    ) {
+                        Image(
+                            painter = painterResource(id = R.drawable.ic_logo),
+                            contentDescription = "Harmoni EQ logo",
+                            modifier = Modifier
+                                .size(20.dp)
+                                .testTag("top_bar_logo")
+                        )
+                        Box(
+                            modifier = Modifier
+                                .size(8.dp)
+                                .clip(CircleShape)
+                                .background(statusDotColor)
+                                .testTag("eq_active_indicator_dot")
+                        )
+                        Text(
+                            text = title,
+                            style = MaterialTheme.typography.titleLarge,
+                            color = palette.textPrimary,
+                            maxLines = 1,
+                            softWrap = false,
+                            modifier = Modifier.testTag("top_bar_title")
+                        )
                     }
-                    Row(verticalAlignment = Alignment.CenterVertically, content = actions)
+                    if (autoEqActive) {
+                        Spacer(Modifier.height(GlassTokens.Space4))
+                        AutoEqActiveTopBarPill(eqActive = eqActive)
+                    }
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End,
+                        verticalAlignment = Alignment.CenterVertically,
+                        content = actions
+                    )
+                } else {
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(GlassTokens.Space8)
+                            ) {
+                                Image(
+                                    painter = painterResource(id = R.drawable.ic_logo),
+                                    contentDescription = "Harmoni EQ logo",
+                                    modifier = Modifier
+                                        .size(20.dp)
+                                        .testTag("top_bar_logo")
+                                )
+                                Box(
+                                    modifier = Modifier
+                                        .size(8.dp)
+                                        .clip(CircleShape)
+                                        .background(statusDotColor)
+                                        .testTag("eq_active_indicator_dot")
+                                )
+                                Text(
+                                    text = title,
+                                    style = MaterialTheme.typography.titleLarge,
+                                    color = palette.textPrimary,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    modifier = Modifier.testTag("top_bar_title")
+                                )
+                            }
+                            if (autoEqActive) {
+                                AutoEqActiveTopBarPill(eqActive = eqActive)
+                            } else if (subtitle != null) {
+                                Text(
+                                    text = if (eqActive) "$subtitle • Active" else "$subtitle • Bypass",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (eqActive) palette.textSecondary else palette.textMuted,
+                                    maxLines = 1
+                                )
+                            }
+                        }
+                        Row(verticalAlignment = Alignment.CenterVertically, content = actions)
+                    }
                 }
             }
+            // Persistent subtle bottom hairline indicating active EQ across all tabs
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(2.dp)
+                    .background(if (eqActive) palette.accent.copy(alpha = 0.72f) else Color.Transparent)
+                    .testTag("eq_active_indicator_bar")
+            )
         }
+    }
+}
+
+@Composable
+private fun AutoEqActiveTopBarPill(eqActive: Boolean) {
+    val palette = LocalHarmoniPalette.current
+    val pillShape = RoundedCornerShape(999.dp)
+    val fillAlpha = if (palette.isDark) 0.16f else 0.12f
+    Row(
+        modifier = Modifier
+            .graphicsLayer { alpha = if (eqActive) 1f else 0.55f }
+            .clip(pillShape)
+            .background(palette.accent.copy(alpha = fillAlpha), pillShape)
+            .border(GlassTokens.BorderWidth, palette.accent.copy(alpha = 0.55f), pillShape)
+            .padding(horizontal = GlassTokens.Space8, vertical = 2.dp)
+            .testTag("top_bar_autoeq_badge"),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(GlassTokens.Space4)
+    ) {
+        Icon(
+            imageVector = Icons.Rounded.Headphones,
+            contentDescription = null,
+            tint = palette.accent,
+            modifier = Modifier.size(12.dp)
+        )
+        Text(
+            text = "AutoEQ: Active",
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.SemiBold,
+            color = palette.accent,
+            maxLines = 1,
+            softWrap = false
+        )
     }
 }
 
